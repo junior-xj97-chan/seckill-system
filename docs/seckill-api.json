@@ -1,0 +1,1011 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Seckill System API",
+    "description": "高并发秒杀系统接口文档\n\n技术栈：Spring Boot 3.x + MySQL + Redis + RabbitMQ + JWT\n\n核心特性：\n- Redis Lua 原子预扣库存（防超卖）\n- RabbitMQ 异步下单（削峰）\n- 数据库乐观锁兜底\n- 接口限流（Redis + AOP）\n- MD5 秒杀地址 + SETNX 去重（防刷）\n- 定时超时关单（释放库存）",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Junior"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "本地开发环境"
+    }
+  ],
+  "tags": [
+    {
+      "name": "用户模块",
+      "description": "用户注册、登录、信息查询"
+    },
+    {
+      "name": "商品模块",
+      "description": "秒杀商品列表与详情（无需登录）"
+    },
+    {
+      "name": "秒杀模块",
+      "description": "秒杀核心流程：获取地址 → 执行秒杀 → 查询结果（需要登录）"
+    },
+    {
+      "name": "订单模块",
+      "description": "订单支付、取消、查询（需要登录）"
+    },
+    {
+      "name": "压测工具",
+      "description": "仅限开发/测试环境使用，生产环境必须禁用"
+    }
+  ],
+  "paths": {
+    "/api/user/register": {
+      "post": {
+        "tags": ["用户模块"],
+        "summary": "用户注册",
+        "description": "注册新用户，手机号不可重复",
+        "operationId": "register",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterDTO"
+              },
+              "example": {
+                "nickname": "测试用户",
+                "phone": "13800138000",
+                "password": "123456"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "注册成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 200,
+                  "message": "注册成功",
+                  "data": null
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "注册失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 500,
+                  "message": "该手机号已注册",
+                  "data": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/user/login": {
+      "post": {
+        "tags": ["用户模块"],
+        "summary": "用户登录",
+        "description": "手机号 + 密码登录，返回 JWT Token",
+        "operationId": "login",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDTO"
+              },
+              "example": {
+                "phone": "13800000001",
+                "password": "123456"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultLoginData" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": {
+                    "token": "eyJhbGciOiJIUzUxMiJ9...",
+                    "userId": 1,
+                    "nickname": "测试用户A"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "登录失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 500,
+                  "message": "用户不存在 / 密码错误",
+                  "data": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/user/info": {
+      "get": {
+        "tags": ["用户模块"],
+        "summary": "获取当前用户信息",
+        "description": "需要登录，通过 JWT Token 识别用户",
+        "operationId": "getUserInfo",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultUser" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": {
+                    "id": 1,
+                    "nickname": "测试用户A",
+                    "phone": "13800000001",
+                    "avatar": null,
+                    "createTime": "2026-04-17T10:33:31"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/goods/list": {
+      "get": {
+        "tags": ["商品模块"],
+        "summary": "秒杀商品列表",
+        "description": "获取所有进行中的秒杀商品（仅展示有库存的）",
+        "operationId": "listGoods",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultGoodsList" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": [
+                    {
+                      "id": 1,
+                      "goodsName": "iPhone 17 Pro",
+                      "goodsTitle": "iPhone 17 Pro 限量秒杀",
+                      "goodsImg": "https://example.com/iphone17.jpg",
+                      "price": 9999.00,
+                      "seckillPrice": 6999.00,
+                      "stockCount": 1000,
+                      "seckillStock": 100,
+                      "startDate": "2026-04-01T00:00:00",
+                      "endDate": "2026-12-31T23:59:59"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/goods/detail/{goodsId}": {
+      "get": {
+        "tags": ["商品模块"],
+        "summary": "商品详情",
+        "description": "获取指定秒杀商品的详细信息",
+        "operationId": "getGoodsDetail",
+        "security": [],
+        "parameters": [
+          {
+            "name": "goodsId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "商品ID",
+            "example": 1
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultGoods" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": {
+                    "id": 1,
+                    "goodsName": "iPhone 17 Pro",
+                    "goodsTitle": "iPhone 17 Pro 限量秒杀",
+                    "goodsImg": "https://example.com/iphone17.jpg",
+                    "goodsDetail": "iPhone 17 Pro 详细介绍...",
+                    "price": 9999.00,
+                    "costPrice": 6000.00,
+                    "stockCount": 1000,
+                    "seckillPrice": 6999.00,
+                    "seckillStock": 100,
+                    "startDate": "2026-04-01T00:00:00",
+                    "endDate": "2026-12-31T23:59:59",
+                    "createTime": "2026-04-17T10:33:31"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/seckill/path/{goodsId}": {
+      "get": {
+        "tags": ["秒杀模块"],
+        "summary": "获取秒杀地址",
+        "description": "获取商品的 MD5 加密秒杀地址，防止直接暴露秒杀接口。地址有效期 5 分钟。",
+        "operationId": "getSeckillPath",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "goodsId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "商品ID",
+            "example": 1
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultString" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": "dca9653cf28baa1f3cb6e90b6b272271"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultString" },
+                "examples": {
+                  "not_started": {
+                    "summary": "秒杀未开始",
+                    "value": { "code": 500, "message": "秒杀尚未开始", "data": null }
+                  },
+                  "ended": {
+                    "summary": "秒杀已结束",
+                    "value": { "code": 500, "message": "秒杀已结束", "data": null }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/seckill/execute/{goodsId}": {
+      "post": {
+        "tags": ["秒杀模块"],
+        "summary": "执行秒杀",
+        "description": "核心秒杀接口。流程：验证地址 → Redis去重 → Lua原子预扣库存 → MQ异步下单。\n\n限流规则：每秒最多 100 次请求。\n同一用户同一商品只能秒杀一次。",
+        "operationId": "executeSeckill",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "goodsId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "商品ID",
+            "example": 1
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "通过 /api/seckill/path/{goodsId} 获取的秒杀地址",
+            "example": "dca9653cf28baa1f3cb6e90b6b272271"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "秒杀成功（排队中）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultString" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": "排队中，请稍后查询秒杀结果"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "秒杀失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultString" },
+                "examples": {
+                  "invalid_path": {
+                    "summary": "秒杀地址无效",
+                    "value": { "code": 500, "message": "秒杀地址无效，请重新获取", "data": null }
+                  },
+                  "sold_out": {
+                    "summary": "商品已售罄",
+                    "value": { "code": 500, "message": "商品已售罄", "data": null }
+                  },
+                  "duplicate": {
+                    "summary": "重复秒杀",
+                    "value": { "code": 500, "message": "您已参与过该商品的秒杀，请勿重复操作", "data": null }
+                  },
+                  "rate_limited": {
+                    "summary": "接口限流",
+                    "value": { "code": 500, "message": "请求过于频繁，请稍后再试", "data": null }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/seckill/result/{goodsId}": {
+      "get": {
+        "tags": ["秒杀模块"],
+        "summary": "查询秒杀结果",
+        "description": "轮询查询秒杀结果。返回值：\n- \"排队中\" → 仍在 MQ 处理中\n- \"SUCCESS:订单号\" → 秒杀成功\n- \"FAILED:订单超时关闭\" → 订单超时被关闭",
+        "operationId": "getSeckillResult",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "goodsId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "商品ID",
+            "example": 1
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultString" },
+                "examples": {
+                  "pending": {
+                    "summary": "排队中",
+                    "value": { "code": 200, "message": "success", "data": "排队中" }
+                  },
+                  "success": {
+                    "summary": "秒杀成功",
+                    "value": { "code": 200, "message": "success", "data": "SUCCESS:17763939689054650" }
+                  },
+                  "failed": {
+                    "summary": "订单超时",
+                    "value": { "code": 200, "message": "success", "data": "FAILED:订单超时关闭" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order/list": {
+      "get": {
+        "tags": ["订单模块"],
+        "summary": "我的订单列表",
+        "description": "查询当前登录用户的所有订单",
+        "operationId": "listOrders",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultOrderList" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": [
+                    {
+                      "id": 1,
+                      "userId": 1,
+                      "goodsId": 1,
+                      "orderNo": "17763939689054650",
+                      "seckillPrice": 6999.00,
+                      "status": 0,
+                      "createTime": "2026-04-17T10:46:09",
+                      "payTime": null
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order/{orderNo}": {
+      "get": {
+        "tags": ["订单模块"],
+        "summary": "订单详情",
+        "description": "根据订单号查询订单详情",
+        "operationId": "getOrderDetail",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "orderNo",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "订单号",
+            "example": "17763939689054650"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultOrder" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": {
+                    "id": 1,
+                    "userId": 1,
+                    "goodsId": 1,
+                    "orderNo": "17763939689054650",
+                    "seckillPrice": 6999.00,
+                    "status": 0,
+                    "createTime": "2026-04-17T10:46:09",
+                    "payTime": null,
+                    "updateTime": "2026-04-17T10:46:09"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order/pay/{orderNo}": {
+      "post": {
+        "tags": ["订单模块"],
+        "summary": "支付订单",
+        "description": "模拟支付，将订单状态从待支付改为已支付",
+        "operationId": "payOrder",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "orderNo",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "订单号",
+            "example": "17763939689054650"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "支付成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 200,
+                  "message": "支付成功",
+                  "data": null
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "支付失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 500,
+                  "message": "订单不存在 / 订单状态异常",
+                  "data": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order/cancel/{orderNo}": {
+      "post": {
+        "tags": ["订单模块"],
+        "summary": "取消订单",
+        "description": "取消订单并回滚 Redis 和数据库库存",
+        "operationId": "cancelOrder",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "orderNo",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "订单号",
+            "example": "17763939689054650"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "取消成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 200,
+                  "message": "订单已取消",
+                  "data": null
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "取消失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 500,
+                  "message": "订单不存在 / 订单状态异常",
+                  "data": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stress/register/{count}": {
+      "post": {
+        "tags": ["压测工具"],
+        "summary": "批量注册用户",
+        "description": "批量注册压测用户（手机号前缀 900），最大 5000 个",
+        "operationId": "batchRegister",
+        "security": [],
+        "parameters": [
+          {
+            "name": "count",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "注册数量",
+            "example": 100
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultInteger" },
+                "example": {
+                  "code": 200,
+                  "message": "批量注册完成",
+                  "data": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stress/login/{count}": {
+      "post": {
+        "tags": ["压测工具"],
+        "summary": "批量登录",
+        "description": "批量登录压测用户，返回 token 列表",
+        "operationId": "batchLogin",
+        "security": [],
+        "parameters": [
+          {
+            "name": "count",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "登录数量",
+            "example": 100
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": { "type": "integer", "example": 200 },
+                    "message": { "type": "string", "example": "批量登录完成" },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": { "type": "integer", "example": 100 },
+                          "token": { "type": "string", "example": "eyJhbGciOiJIUzUxMiJ9..." }
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "code": 200,
+                  "message": "批量登录完成",
+                  "data": [
+                    { "userId": 6, "token": "eyJhbGci..." },
+                    { "userId": 7, "token": "eyJhbGci..." }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stress/reset-stock/{goodsId}/{stock}": {
+      "post": {
+        "tags": ["压测工具"],
+        "summary": "重置商品库存",
+        "description": "重置指定商品的 Redis 和数据库库存，同时清理相关的秒杀去重/结果缓存",
+        "operationId": "resetStock",
+        "security": [],
+        "parameters": [
+          {
+            "name": "goodsId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "商品ID",
+            "example": 1
+          },
+          {
+            "name": "stock",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "重置库存数量",
+            "example": 100
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 200,
+                  "message": "库存重置完成",
+                  "data": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stress/order-count/{goodsId}": {
+      "get": {
+        "tags": ["压测工具"],
+        "summary": "查询商品订单数",
+        "description": "查询某商品在数据库中的实际订单数",
+        "operationId": "getOrderCount",
+        "security": [],
+        "parameters": [
+          {
+            "name": "goodsId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "商品ID",
+            "example": 1
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultLong" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": 10
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stress/redis-stock/{goodsId}": {
+      "get": {
+        "tags": ["压测工具"],
+        "summary": "查询 Redis 库存",
+        "description": "查询某商品在 Redis 中的剩余库存",
+        "operationId": "getRedisStock",
+        "security": [],
+        "parameters": [
+          {
+            "name": "goodsId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "商品ID",
+            "example": 1
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultString" },
+                "example": {
+                  "code": 200,
+                  "message": "success",
+                  "data": "90"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stress/cleanup": {
+      "delete": {
+        "tags": ["压测工具"],
+        "summary": "清理压测数据",
+        "description": "删除所有压测用户（手机号 900 前缀）和压测订单",
+        "operationId": "cleanupStressData",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResultVoid" },
+                "example": {
+                  "code": 200,
+                  "message": "压测数据已清理",
+                  "data": null
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT Token，通过登录接口获取。请求头格式：Authorization: Bearer {token}"
+      }
+    },
+    "schemas": {
+      "RegisterDTO": {
+        "type": "object",
+        "required": ["nickname", "phone", "password"],
+        "properties": {
+          "nickname": {
+            "type": "string",
+            "description": "用户昵称",
+            "example": "测试用户"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^1[3-9]\\d{9}$",
+            "description": "手机号（11位，1开头）",
+            "example": "13800138000"
+          },
+          "password": {
+            "type": "string",
+            "description": "密码",
+            "example": "123456"
+          }
+        }
+      },
+      "LoginDTO": {
+        "type": "object",
+        "required": ["phone", "password"],
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "手机号",
+            "example": "13800000001"
+          },
+          "password": {
+            "type": "string",
+            "description": "密码",
+            "example": "123456"
+          }
+        }
+      },
+      "SeckillGoods": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "description": "商品ID", "example": 1 },
+          "goodsName": { "type": "string", "description": "商品名称", "example": "iPhone 17 Pro" },
+          "goodsTitle": { "type": "string", "description": "商品副标题", "example": "iPhone 17 Pro 限量秒杀" },
+          "goodsImg": { "type": "string", "description": "商品图片URL", "example": "https://example.com/iphone17.jpg" },
+          "goodsDetail": { "type": "string", "description": "商品详情" },
+          "price": { "type": "number", "format": "double", "description": "原价", "example": 9999.00 },
+          "costPrice": { "type": "number", "format": "double", "description": "成本价", "example": 6000.00 },
+          "stockCount": { "type": "integer", "description": "总库存", "example": 1000 },
+          "seckillPrice": { "type": "number", "format": "double", "description": "秒杀价", "example": 6999.00 },
+          "seckillStock": { "type": "integer", "description": "秒杀剩余库存", "example": 100 },
+          "startDate": { "type": "string", "format": "date-time", "description": "秒杀开始时间", "example": "2026-04-01T00:00:00" },
+          "endDate": { "type": "string", "format": "date-time", "description": "秒杀结束时间", "example": "2026-12-31T23:59:59" },
+          "createTime": { "type": "string", "format": "date-time", "description": "创建时间" },
+          "updateTime": { "type": "string", "format": "date-time", "description": "更新时间" }
+        }
+      },
+      "SeckillOrder": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "description": "订单ID" },
+          "userId": { "type": "integer", "format": "int64", "description": "用户ID" },
+          "goodsId": { "type": "integer", "format": "int64", "description": "商品ID" },
+          "orderNo": { "type": "string", "description": "订单号", "example": "17763939689054650" },
+          "seckillPrice": { "type": "number", "format": "double", "description": "秒杀价格", "example": 6999.00 },
+          "status": {
+            "type": "integer",
+            "description": "订单状态：0-待支付 1-已支付 2-已取消 3-超时关闭",
+            "enum": [0, 1, 2, 3],
+            "example": 0
+          },
+          "createTime": { "type": "string", "format": "date-time", "description": "创建时间" },
+          "payTime": { "type": "string", "format": "date-time", "description": "支付时间", "nullable": true },
+          "updateTime": { "type": "string", "format": "date-time", "description": "更新时间" }
+        }
+      },
+      "SeckillUser": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "description": "用户ID" },
+          "nickname": { "type": "string", "description": "昵称" },
+          "phone": { "type": "string", "description": "手机号" },
+          "avatar": { "type": "string", "description": "头像URL", "nullable": true },
+          "createTime": { "type": "string", "format": "date-time", "description": "注册时间" }
+        }
+      },
+      "ResultVoid": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "description": "状态码，200=成功，500=失败", "example": 200 },
+          "message": { "type": "string", "description": "提示信息", "example": "success" },
+          "data": { "type": "object", "nullable": true, "description": "数据" }
+        }
+      },
+      "ResultString": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "description": "状态码", "example": 200 },
+          "message": { "type": "string", "description": "提示信息", "example": "success" },
+          "data": { "type": "string", "description": "返回数据", "nullable": true }
+        }
+      },
+      "ResultInteger": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": { "type": "integer", "nullable": true }
+        }
+      },
+      "ResultLong": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": { "type": "integer", "format": "int64", "nullable": true }
+        }
+      },
+      "ResultLoginData": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": {
+            "type": "object",
+            "properties": {
+              "token": { "type": "string", "description": "JWT Token" },
+              "userId": { "type": "integer", "format": "int64", "description": "用户ID" },
+              "nickname": { "type": "string", "description": "用户昵称" }
+            }
+          }
+        }
+      },
+      "ResultUser": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": { "$ref": "#/components/schemas/SeckillUser" }
+        }
+      },
+      "ResultGoods": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": { "$ref": "#/components/schemas/SeckillGoods" }
+        }
+      },
+      "ResultGoodsList": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SeckillGoods" }
+          }
+        }
+      },
+      "ResultOrder": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": { "$ref": "#/components/schemas/SeckillOrder" }
+        }
+      },
+      "ResultOrderList": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer", "example": 200 },
+          "message": { "type": "string", "example": "success" },
+          "data": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SeckillOrder" }
+          }
+        }
+      }
+    }
+  }
+}
